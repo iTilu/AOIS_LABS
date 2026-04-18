@@ -1,13 +1,14 @@
 from binary_int import BinaryInt
 from float_ieee754 import Float32
 from bcd_excess3 import Excess3BCD
+from constants import CLI_SEPARATOR_WIDTH, DEFAULT_DECIMAL_PRECISION, DEFAULT_FRACTIONAL_BIT_COUNT
 
 
 def bit_array_to_string(bit_array):
     return "".join(str(current_bit) for current_bit in bit_array)
 
 
-def direct_fixed_bits_to_string(direct_bits, fractional_bit_count=16):
+def direct_fixed_bits_to_string(direct_bits, fractional_bit_count=DEFAULT_FRACTIONAL_BIT_COUNT):
     sign_bit_text = str(direct_bits[0])
     magnitude_bits = direct_bits[1:]
     integer_bits = magnitude_bits[:len(magnitude_bits) - fractional_bit_count]
@@ -18,7 +19,7 @@ def direct_fixed_bits_to_string(direct_bits, fractional_bit_count=16):
 
 
 def print_separator():
-    print("=" * 70)
+    print("=" * CLI_SEPARATOR_WIDTH)
 
 
 def read_int(prompt_text, allow_negative=True):
@@ -115,19 +116,19 @@ def run_direct_division():
     left_number = BinaryInt(read_int("Введите делимое: "))
     right_number = BinaryInt(read_int("Введите делитель: "))
     try:
-        result_bits = left_number.divide_direct(right_number, fractional_bit_count=16)
+        result_bits = left_number.divide_direct(right_number, fractional_bit_count=DEFAULT_FRACTIONAL_BIT_COUNT)
     except ZeroDivisionError:
         print("Ошибка: деление на ноль.")
         return
 
     result_decimal = left_number.direct_fixed_to_decimal_string(
         result_bits,
-        precision=5,
-        fractional_bit_count=16,
+        precision=DEFAULT_DECIMAL_PRECISION,
+        fractional_bit_count=DEFAULT_FRACTIONAL_BIT_COUNT,
     )
     print("Expression :", left_number.value, "/", right_number.value)
     print("Binary     :", bit_array_to_string(result_bits))
-    print("Binary fmt :", direct_fixed_bits_to_string(result_bits, fractional_bit_count=16))
+    print("Binary fmt :", direct_fixed_bits_to_string(result_bits, fractional_bit_count=DEFAULT_FRACTIONAL_BIT_COUNT))
     print("Decimal    :", result_decimal)
 
 

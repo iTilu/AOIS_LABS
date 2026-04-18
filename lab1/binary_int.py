@@ -1,5 +1,8 @@
+from constants import BINARY_BASE, DECIMAL_BASE, DEFAULT_INTEGER_BIT_WIDTH
+
+
 class BinaryInt:
-    def __init__(self, decimal_value: int, bit_width: int = 32):
+    def __init__(self, decimal_value: int, bit_width: int = DEFAULT_INTEGER_BIT_WIDTH):
         self.bits = bit_width
         self.value = decimal_value
 
@@ -9,8 +12,8 @@ class BinaryInt:
         write_position = magnitude_width - 1
 
         while absolute_value > 0 and write_position >= 0:
-            magnitude_bits[write_position] = absolute_value % 2
-            absolute_value //= 2
+            magnitude_bits[write_position] = absolute_value % BINARY_BASE
+            absolute_value //= BINARY_BASE
             write_position -= 1
 
         return magnitude_bits
@@ -21,15 +24,15 @@ class BinaryInt:
 
         for bit_position in range(len(first_bits) - 1, -1, -1):
             total_value = first_bits[bit_position] + second_bits[bit_position] + carry_bit
-            sum_bits[bit_position] = total_value % 2
-            carry_bit = total_value // 2
+            sum_bits[bit_position] = total_value % BINARY_BASE
+            carry_bit = total_value // BINARY_BASE
 
         return sum_bits, carry_bit
 
     def _unsigned_bits_to_decimal(self, bit_array):
         unsigned_value = 0
         for current_bit in bit_array:
-            unsigned_value = unsigned_value * 2 + current_bit
+            unsigned_value = unsigned_value * BINARY_BASE + current_bit
         return unsigned_value
 
     def direct_code(self):
@@ -106,12 +109,12 @@ class BinaryInt:
             dividend_bits = [0]
         else:
             while dividend_copy > 0:
-                dividend_bits.insert(0, dividend_copy % 2)
-                dividend_copy //= 2
+                dividend_bits.insert(0, dividend_copy % BINARY_BASE)
+                dividend_copy //= BINARY_BASE
 
         for current_bit in dividend_bits:
-            remainder_value = remainder_value * 2 + current_bit
-            quotient_value = quotient_value * 2
+            remainder_value = remainder_value * BINARY_BASE + current_bit
+            quotient_value = quotient_value * BINARY_BASE
             if remainder_value >= divisor_value:
                 remainder_value -= divisor_value
                 quotient_value += 1
@@ -130,7 +133,7 @@ class BinaryInt:
 
         fractional_part_value = 0
         for _ in range(fractional_bit_count):
-            remainder_value *= 2
+            remainder_value *= BINARY_BASE
             fractional_part_value <<= 1
             if remainder_value >= absolute_divisor:
                 fractional_part_value |= 1
@@ -165,7 +168,7 @@ class BinaryInt:
         for bit_position in range(fractional_bit_count - 1, -1, -1):
             if (fractional_bits_value >> bit_position) & 1:
                 decimal_value += fractional_weight
-            fractional_weight /= 2
+            fractional_weight /= BINARY_BASE
 
         return sign_multiplier * decimal_value
 
@@ -178,7 +181,7 @@ class BinaryInt:
 
         decimal_digits = []
         for _ in range(precision):
-            fractional_bits_value *= 10
+            fractional_bits_value *= DECIMAL_BASE
             next_digit_value = fractional_bits_value >> fractional_bit_count
             decimal_digits.append(str(next_digit_value))
             fractional_bits_value &= (1 << fractional_bit_count) - 1

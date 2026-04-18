@@ -1,3 +1,16 @@
+from constants import (
+    BINARY_BASE,
+    DECIMAL_BASE,
+    IEEE754_EXPONENT_BIAS,
+    IEEE754_EXPONENT_BIT_COUNT,
+    IEEE754_MANTISSA_BIT_COUNT,
+    IEEE754_MANTISSA_WITH_GUARD_BIT_COUNT,
+    IEEE754_MAX_BIASED_EXPONENT,
+    IEEE754_SUBNORMAL_EXPONENT,
+    IEEE754_TOTAL_BITS,
+)
+
+
 class Float32:
     def __init__(self, decimal_value: float):
         self.value = decimal_value
@@ -7,8 +20,8 @@ class Float32:
         write_position = bit_width - 1
 
         while integer_value > 0 and write_position >= 0:
-            bit_array[write_position] = integer_value % 2
-            integer_value //= 2
+            bit_array[write_position] = integer_value % BINARY_BASE
+            integer_value //= BINARY_BASE
             write_position -= 1
 
         return bit_array
@@ -16,7 +29,7 @@ class Float32:
     def _bits_to_integer(self, bit_array):
         integer_value = 0
         for current_bit in bit_array:
-            integer_value = integer_value * 2 + current_bit
+            integer_value = integer_value * BINARY_BASE + current_bit
         return integer_value
 
     def _parse_decimal_to_ratio(self, decimal_value: float):
@@ -39,17 +52,17 @@ class Float32:
             ratio_numerator = int(combined_digits)
             ratio_denominator = 1
             for _ in fractional_part_text:
-                ratio_denominator *= 10
+                ratio_denominator *= DECIMAL_BASE
         else:
             ratio_numerator = int(decimal_text) if decimal_text else 0
             ratio_denominator = 1
 
         if decimal_exponent > 0:
             for _ in range(decimal_exponent):
-                ratio_numerator *= 10
+                ratio_numerator *= DECIMAL_BASE
         elif decimal_exponent < 0:
             for _ in range(-decimal_exponent):
-                ratio_denominator *= 10
+                ratio_denominator *= DECIMAL_BASE
 
         return sign_multiplier * ratio_numerator, ratio_denominator
 
@@ -68,7 +81,7 @@ class Float32:
 
     def _build_ieee754_bits_from_ratio(self, ratio_numerator: int, ratio_denominator: int):
         if ratio_numerator == 0:
-            return [0] * 32
+            return [0] * IEEE754_TOTAL_BITS
 
         sign_bit = 1 if ratio_numerator < 0 else 0
         absolute_numerator = abs(ratio_numerator)
@@ -78,30 +91,30 @@ class Float32:
             ratio_denominator,
         )
 
-        biased_exponent_value = binary_exponent + 127
+        biased_exponent_value = binary_exponent + IEEE754_EXPONENT_BIAS
 
         if biased_exponent_value <= 0:
-            return [sign_bit] + [0] * 31
+            return [sign_bit] + [0] * (IEEE754_TOTAL_BITS - 1)
 
-        if biased_exponent_value >= 255:
-            return [sign_bit] + [1] * 8 + [0] * 23
+        if biased_exponent_value >= IEEE754_MAX_BIASED_EXPONENT:
+            return [sign_bit] + [1] * IEEE754_EXPONENT_BIT_COUNT + [0] * IEEE754_MANTISSA_BIT_COUNT
 
         remainder_value = normalized_numerator - normalized_denominator
         mantissa_with_guard = []
 
-        for _ in range(24):
-            remainder_value *= 2
+        for _ in range(IEEE754_MANTISSA_WITH_GUARD_BIT_COUNT):
+            remainder_value *= BINARY_BASE
             if remainder_value >= normalized_denominator:
                 mantissa_with_guard.append(1)
                 remainder_value -= normalized_denominator
             else:
                 mantissa_with_guard.append(0)
 
-        mantissa_bits = mantissa_with_guard[:23]
-        guard_bit = mantissa_with_guard[23]
+        mantissa_bits = mantissa_with_guard[:IEEE754_MANTISSA_BIT_COUNT]
+        guard_bit = mantissa_with_guard[IEEE754_MANTISSA_BIT_COUNT]
 
         if guard_bit == 1:
-            round_position = 22
+            round_position = IEEE754_MANTISSA_BIT_COUNT - 1
             while round_position >= 0 and mantissa_bits[round_position] == 1:
                 mantissa_bits[round_position] = 0
                 round_position -= 1
@@ -110,11 +123,11 @@ class Float32:
                 mantissa_bits[round_position] = 1
             else:
                 biased_exponent_value += 1
-                if biased_exponent_value >= 255:
-                    return [sign_bit] + [1] * 8 + [0] * 23
-                mantissa_bits = [0] * 23
+                if biased_exponent_value >= IEEE754_MAX_BIASED_EXPONENT:
+                    return [sign_bit] + [1] * IEEE754_EXPONENT_BIT_COUNT + [0] * IEEE754_MANTISSA_BIT_COUNT
+                mantissa_bits = [0] * IEEE754_MANTISSA_BIT_COUNT
 
-        exponent_bits = self._integer_to_bits(biased_exponent_value, 8)
+        exponent_bits = self._integer_to_bits(biased_exponent_value, IEEE754_EXPONENT_BIT_COUNT)
         return [sign_bit] + exponent_bits + mantissa_bits
 
     def to_ieee754(self):
@@ -123,20 +136,21 @@ class Float32:
 
     def _decode_ieee754_bits_to_ratio(self, ieee754_bits):
         sign_multiplier = -1 if ieee754_bits[0] == 1 else 1
-        exponent_value = self._bits_to_integer(ieee754_bits[1:9])
-        mantissa_value = self._bits_to_integer(ieee754_bits[9:])
+        exponent_end = 1 + IEEE754_EXPONENT_BIT_COUNT
+        exponent_value = self._bits_to_integer(ieee754_bits[1:exponent_end])
+        mantissa_value = self._bits_to_integer(ieee754_bits[exponent_end:])
 
         if exponent_value == 0 and mantissa_value == 0:
             return 0, 1
 
         if exponent_value == 0:
             significand_numerator = mantissa_value
-            significand_denominator = 1 << 23
-            exponent_shift = -126
+            significand_denominator = 1 << IEEE754_MANTISSA_BIT_COUNT
+            exponent_shift = IEEE754_SUBNORMAL_EXPONENT
         else:
-            significand_numerator = (1 << 23) + mantissa_value
-            significand_denominator = 1 << 23
-            exponent_shift = exponent_value - 127
+            significand_numerator = (1 << IEEE754_MANTISSA_BIT_COUNT) + mantissa_value
+            significand_denominator = 1 << IEEE754_MANTISSA_BIT_COUNT
+            exponent_shift = exponent_value - IEEE754_EXPONENT_BIAS
 
         ratio_numerator = significand_numerator
         ratio_denominator = significand_denominator
