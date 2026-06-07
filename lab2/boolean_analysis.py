@@ -175,6 +175,231 @@ def _select_cover(prime_implicants: tuple[BitPattern, ...], required_assignments
     return tuple(sorted((prime_implicants[index] for index in selected_indices), key=_pattern_sort_key))
 
 
+def _petrick_cover(
+    prime_implicants: tuple[BitPattern, ...],
+    required_assignments: tuple[tuple[int, ...], ...],
+    excluded_indices: set[int],
+) -> tuple[int, ...]:
+    available_indices = [index for index in range(len(prime_implicants)) if index not in excluded_indices]
+    cover_options: list[tuple[int, ...]] = []
+    for assignment in required_assignments:
+        covering_indices = tuple(
+            index
+            for index in available_indices
+            if _pattern_covers_value(prime_implicants[index], assignment)
+        )
+        if not covering_indices:
+            return tuple()
+        cover_options.append(covering_indices)
+
+    solutions: list[tuple[int, ...]] = [tuple()]
+    for cover_option in cover_options:
+        next_solutions: list[tuple[int, ...]] = []
+        for current_solution in solutions:
+            for prime_index in cover_option:
+                next_solutions.append(tuple(sorted(set((*current_solution, prime_index)))))
+        solutions = next_solutions
+
+    best_solution: tuple[int, ...] | None = None
+    best_signature: tuple[int, int, tuple[tuple[int, tuple[int, ...]], ...]] | None = None
+    for solution in solutions:
+        chosen_patterns = tuple(prime_implicants[index] for index in solution)
+        signature = (
+            len(solution),
+            sum(_count_defined_bits(bit_pattern) for bit_pattern in chosen_patterns),
+            tuple(_pattern_sort_key(bit_pattern) for bit_pattern in chosen_patterns),
+        )
+        if best_signature is None or signature < best_signature:
+            best_signature = signature
+            best_solution = solution
+    return best_solution or tuple()
+
+
+def _select_cover_table(
+    prime_implicants: tuple[BitPattern, ...],
+    required_assignments: tuple[tuple[int, ...], ...],
+) -> tuple[BitPattern, ...]:
+    if not required_assignments:
+        return tuple()
+
+    selected_indices: set[int] = set()
+    uncovered_assignments = list(required_assignments)
+
+    while uncovered_assignments:
+        essential_indices: set[int] = set()
+        for assignment in uncovered_assignments:
+            covering_indices = [
+                pattern_index
+                for pattern_index, bit_pattern in enumerate(prime_implicants)
+                if pattern_index not in selected_indices and _pattern_covers_value(bit_pattern, assignment)
+            ]
+            if len(covering_indices) == 1:
+                essential_indices.add(covering_indices[0])
+
+        if essential_indices:
+            selected_indices.update(essential_indices)
+            uncovered_assignments = [
+                assignment
+                for assignment in uncovered_assignments
+                if not any(_pattern_covers_value(prime_implicants[index], assignment) for index in selected_indices)
+            ]
+            continue
+
+        petrick_indices = _petrick_cover(prime_implicants, tuple(uncovered_assignments), selected_indices)
+        selected_indices.update(petrick_indices)
+        uncovered_assignments = [
+            assignment
+            for assignment in uncovered_assignments
+            if not any(_pattern_covers_value(prime_implicants[index], assignment) for index in selected_indices)
+        ]
+
+    return tuple(sorted((prime_implicants[index] for index in selected_indices), key=_pattern_sort_key))
+
+
+def _assignment_to_map_cell(
+    assignment: tuple[int, ...],
+    row_count: int,
+    row_codes: tuple[str, ...],
+    col_codes: tuple[str, ...],
+) -> tuple[int, int]:
+    row_bits = "".join(str(assignment[variable_index]) for variable_index in range(row_count))
+    column_bits = "".join(str(assignment[variable_index]) for variable_index in range(row_count, len(assignment)))
+    row_index = row_codes.index(row_bits) if row_count else 0
+    column_index = col_codes.index(column_bits) if column_bits else 0
+    return row_index, column_index
+
+
+def _is_power_of_two(value: int) -> bool:
+    return value > 0 and (value & (value - 1)) == 0
+
+
+def _rectangle_cells(
+    start_row: int,
+    start_column: int,
+    height: int,
+    width: int,
+    row_grid_size: int,
+    column_grid_size: int,
+) -> frozenset[tuple[int, int]]:
+    return frozenset(
+        ((start_row + row_offset) % row_grid_size, (start_column + column_offset) % column_grid_size)
+        for row_offset in range(height)
+        for column_offset in range(width)
+    )
+
+
+def _is_valid_karnaugh_group(
+    cells: frozenset[tuple[int, int]],
+    row_grid_size: int,
+    column_grid_size: int,
+) -> bool:
+    cell_count = len(cells)
+    if cell_count == 0 or not _is_power_of_two(cell_count):
+        return False
+    if cell_count == 1:
+        return True
+
+    height_power = 0
+    while (1 << height_power) <= cell_count:
+        height = 1 << height_power
+        if cell_count % height != 0:
+            height_power += 1
+            continue
+        width = cell_count // height
+        if not _is_power_of_two(width):
+            height_power += 1
+            continue
+        for start_row in range(row_grid_size):
+            for start_column in range(column_grid_size):
+                if _rectangle_cells(start_row, start_column, height, width, row_grid_size, column_grid_size) == cells:
+                    return True
+        height_power += 1
+    return False
+
+
+def _groups_can_merge_on_map(
+    first_group: tuple[BitPattern, frozenset[tuple[int, int]]],
+    second_group: tuple[BitPattern, frozenset[tuple[int, int]]],
+    row_grid_size: int,
+    column_grid_size: int,
+) -> BitPattern | None:
+    first_pattern, first_cells = first_group
+    second_pattern, second_cells = second_group
+    combined_pattern = _combine_patterns(first_pattern, second_pattern)
+    if combined_pattern is None or len(first_cells) != len(second_cells):
+        return None
+
+    merged_cells = first_cells | second_cells
+    if not _is_valid_karnaugh_group(merged_cells, row_grid_size, column_grid_size):
+        return None
+    return combined_pattern
+
+
+def _build_karnaugh_prime_implicants(
+    initial_patterns: tuple[BitPattern, ...],
+    variable_names: tuple[str, ...],
+) -> tuple[tuple[BitPattern, ...], tuple[BitPattern, ...]]:
+    variable_count = len(variable_names)
+    row_variable_count = variable_count // 2
+    column_variable_count = variable_count - row_variable_count
+    row_codes = _gray_code(row_variable_count)
+    column_codes = _gray_code(column_variable_count)
+    row_grid_size = len(row_codes)
+    column_grid_size = len(column_codes)
+
+    current_groups = tuple(
+        sorted(
+            (
+                (
+                    bit_pattern,
+                    frozenset({_assignment_to_map_cell(bit_pattern, row_variable_count, row_codes, column_codes)}),
+                )
+                for bit_pattern in set(initial_patterns)
+            ),
+            key=lambda group: _pattern_sort_key(group[0]),
+        )
+    )
+    gluing_stages: list[tuple[BitPattern, ...]] = [tuple(group[0] for group in current_groups)]
+    prime_implicants: set[BitPattern] = set()
+
+    while current_groups:
+        used_groups: set[tuple[BitPattern, frozenset[tuple[int, int]]]] = set()
+        next_groups: dict[BitPattern, frozenset[tuple[int, int]]] = {}
+        for first_index, first_group in enumerate(current_groups):
+            for second_group in current_groups[first_index + 1 :]:
+                combined_pattern = _groups_can_merge_on_map(
+                    first_group,
+                    second_group,
+                    row_grid_size,
+                    column_grid_size,
+                )
+                if combined_pattern is None:
+                    continue
+                used_groups.add(first_group)
+                used_groups.add(second_group)
+                merged_cells = first_group[1] | second_group[1]
+                if combined_pattern in next_groups:
+                    next_groups[combined_pattern] |= merged_cells
+                else:
+                    next_groups[combined_pattern] = merged_cells
+
+        for group in current_groups:
+            if group not in used_groups:
+                prime_implicants.add(group[0])
+
+        if not next_groups:
+            break
+        current_groups = tuple(
+            sorted(
+                ((bit_pattern, next_groups[bit_pattern]) for bit_pattern in next_groups),
+                key=lambda group: _pattern_sort_key(group[0]),
+            )
+        )
+        gluing_stages.append(tuple(group[0] for group in current_groups))
+
+    return tuple(gluing_stages), tuple(sorted(prime_implicants, key=_pattern_sort_key))
+
+
 def _build_prime_implicants(initial_patterns: tuple[BitPattern, ...]) -> tuple[tuple[BitPattern, ...], tuple[BitPattern, ...]]:
     current_patterns = tuple(sorted(set(initial_patterns), key=_pattern_sort_key))
     gluing_stages: list[tuple[BitPattern, ...]] = [current_patterns]
@@ -205,28 +430,45 @@ def _build_prime_implicants(initial_patterns: tuple[BitPattern, ...]) -> tuple[t
 
 
 def _build_coverage_table_lines(
-    selected_implicants: tuple[BitPattern, ...],
+    implicants: tuple[BitPattern, ...],
     required_assignments: tuple[tuple[int, ...], ...],
     variable_names: tuple[str, ...],
     form: str,
+    selected_implicants: tuple[BitPattern, ...] | None = None,
 ) -> tuple[str, ...]:
-    if not selected_implicants:
+    if not implicants:
         return tuple()
 
     table_rows: list[tuple[str, ...]] = [
         tuple(["Импликанта", *["".join(str(bit_value) for bit_value in assignment) for assignment in required_assignments]])
     ]
-    for bit_pattern in selected_implicants:
+    selected_set = set(selected_implicants or implicants)
+    for bit_pattern in implicants:
         marker_cells = ["X" if _pattern_covers_value(bit_pattern, assignment) else "." for assignment in required_assignments]
-        table_rows.append(tuple([_format_pattern_for_stage(bit_pattern, variable_names, form), *marker_cells]))
+        label = _format_pattern_for_stage(bit_pattern, variable_names, form)
+        if selected_implicants is not None and bit_pattern in selected_set:
+            label = f"*{label}"
+        table_rows.append(tuple([label, *marker_cells]))
     return _format_table(tuple(table_rows))
 
 
-def _minimize_assignments(
+def _format_minimized_expression(
+    selected_implicants: tuple[BitPattern, ...],
+    variable_names: tuple[str, ...],
+    form: str,
+) -> str:
+    if form == "dnf":
+        formatted_terms = sorted(_format_dnf_term(bit_pattern, variable_names) for bit_pattern in selected_implicants)
+        return " | ".join(formatted_terms)
+    formatted_clauses = sorted(_format_cnf_clause(bit_pattern, variable_names) for bit_pattern in selected_implicants)
+    return " & ".join(formatted_clauses)
+
+
+def _minimize_constant_result(
     assignments: tuple[tuple[int, ...], ...],
     variable_names: tuple[str, ...],
     form: str,
-) -> MinimizationResult:
+) -> MinimizationResult | None:
     if not assignments:
         default_expression = "0" if form == "dnf" else "1"
         return MinimizationResult(default_expression, tuple(), tuple(), tuple(), tuple())
@@ -237,18 +479,74 @@ def _minimize_assignments(
         full_pattern = tuple(None for _ in variable_names)
         coverage_lines = _build_coverage_table_lines((full_pattern,), assignments, variable_names, form)
         return MinimizationResult(default_expression, (full_pattern,), (full_pattern,), ((full_pattern,),), coverage_lines)
+    return None
+
+
+def _minimize_by_calculation(
+    assignments: tuple[tuple[int, ...], ...],
+    variable_names: tuple[str, ...],
+    form: str,
+) -> MinimizationResult:
+    constant_result = _minimize_constant_result(assignments, variable_names, form)
+    if constant_result is not None:
+        return constant_result
 
     initial_patterns = tuple(assignments)
     gluing_stages, prime_implicants = _build_prime_implicants(initial_patterns)
     selected_implicants = _select_cover(prime_implicants, assignments)
+    minimized_expression = _format_minimized_expression(selected_implicants, variable_names, form)
+    coverage_lines = _build_coverage_table_lines(selected_implicants, assignments, variable_names, form)
+    return MinimizationResult(
+        minimized_expression=minimized_expression,
+        prime_implicants=prime_implicants,
+        selected_implicants=selected_implicants,
+        gluing_stages=gluing_stages,
+        coverage_table_lines=coverage_lines,
+    )
 
-    if form == "dnf":
-        formatted_terms = sorted(_format_dnf_term(bit_pattern, variable_names) for bit_pattern in selected_implicants)
-        minimized_expression = " | ".join(formatted_terms)
-    else:
-        formatted_clauses = sorted(_format_cnf_clause(bit_pattern, variable_names) for bit_pattern in selected_implicants)
-        minimized_expression = " & ".join(formatted_clauses)
 
+def _minimize_by_table(
+    assignments: tuple[tuple[int, ...], ...],
+    variable_names: tuple[str, ...],
+    form: str,
+) -> MinimizationResult:
+    constant_result = _minimize_constant_result(assignments, variable_names, form)
+    if constant_result is not None:
+        return constant_result
+
+    initial_patterns = tuple(assignments)
+    gluing_stages, prime_implicants = _build_prime_implicants(initial_patterns)
+    selected_implicants = _select_cover_table(prime_implicants, assignments)
+    minimized_expression = _format_minimized_expression(selected_implicants, variable_names, form)
+    coverage_lines = _build_coverage_table_lines(
+        prime_implicants,
+        assignments,
+        variable_names,
+        form,
+        selected_implicants=selected_implicants,
+    )
+    return MinimizationResult(
+        minimized_expression=minimized_expression,
+        prime_implicants=prime_implicants,
+        selected_implicants=selected_implicants,
+        gluing_stages=gluing_stages,
+        coverage_table_lines=coverage_lines,
+    )
+
+
+def _minimize_by_karnaugh(
+    assignments: tuple[tuple[int, ...], ...],
+    variable_names: tuple[str, ...],
+    form: str,
+) -> MinimizationResult:
+    constant_result = _minimize_constant_result(assignments, variable_names, form)
+    if constant_result is not None:
+        return constant_result
+
+    initial_patterns = tuple(assignments)
+    gluing_stages, prime_implicants = _build_karnaugh_prime_implicants(initial_patterns, variable_names)
+    selected_implicants = _select_cover(prime_implicants, assignments)
+    minimized_expression = _format_minimized_expression(selected_implicants, variable_names, form)
     coverage_lines = _build_coverage_table_lines(selected_implicants, assignments, variable_names, form)
     return MinimizationResult(
         minimized_expression=minimized_expression,
@@ -460,7 +758,7 @@ class BooleanFunctionAnalyzer:
             for row, result_value in zip(self.truth_table, result_vector)
             if result_value == 1
         )
-        return _minimize_assignments(assignments, self.variable_names, "dnf").minimized_expression
+        return _minimize_by_calculation(assignments, self.variable_names, "dnf").minimized_expression
 
     def derivative_formula(self, derivative_variables: tuple[str, ...]) -> str:
         derivative_values = self.boolean_derivative(derivative_variables)
@@ -481,17 +779,19 @@ class BooleanFunctionAnalyzer:
 
     def minimize_dnf_calculation(self) -> MinimizationResult:
         assignments = tuple(row.variable_values for row in self.truth_table if row.result_value == 1)
-        return _minimize_assignments(assignments, self.variable_names, "dnf")
+        return _minimize_by_calculation(assignments, self.variable_names, "dnf")
 
     def minimize_cnf_calculation(self) -> MinimizationResult:
         assignments = tuple(row.variable_values for row in self.truth_table if row.result_value == 0)
-        return _minimize_assignments(assignments, self.variable_names, "cnf")
+        return _minimize_by_calculation(assignments, self.variable_names, "cnf")
 
     def minimize_dnf_calculation_table(self) -> MinimizationResult:
-        return self.minimize_dnf_calculation()
+        assignments = tuple(row.variable_values for row in self.truth_table if row.result_value == 1)
+        return _minimize_by_table(assignments, self.variable_names, "dnf")
 
     def minimize_cnf_calculation_table(self) -> MinimizationResult:
-        return self.minimize_cnf_calculation()
+        assignments = tuple(row.variable_values for row in self.truth_table if row.result_value == 0)
+        return _minimize_by_table(assignments, self.variable_names, "cnf")
 
     def karnaugh_map(self, target_value: int) -> tuple[str, ...]:
         variable_count = len(self.variable_names)
@@ -520,10 +820,12 @@ class BooleanFunctionAnalyzer:
         return _format_table(tuple(table_rows))
 
     def minimize_dnf_karnaugh(self) -> MinimizationResult:
-        return self.minimize_dnf_calculation()
+        assignments = tuple(row.variable_values for row in self.truth_table if row.result_value == 1)
+        return _minimize_by_karnaugh(assignments, self.variable_names, "dnf")
 
     def minimize_cnf_karnaugh(self) -> MinimizationResult:
-        return self.minimize_cnf_calculation()
+        assignments = tuple(row.variable_values for row in self.truth_table if row.result_value == 0)
+        return _minimize_by_karnaugh(assignments, self.variable_names, "cnf")
 
     def build_report(self) -> str:
         report_sections: list[str] = []
