@@ -256,149 +256,184 @@ def _select_cover_table(
     return tuple(sorted((prime_implicants[index] for index in selected_indices), key=_pattern_sort_key))
 
 
-def _assignment_to_map_cell(
-    assignment: tuple[int, ...],
-    row_count: int,
-    row_codes: tuple[str, ...],
-    col_codes: tuple[str, ...],
-) -> tuple[int, int]:
-    row_bits = "".join(str(assignment[variable_index]) for variable_index in range(row_count))
-    column_bits = "".join(str(assignment[variable_index]) for variable_index in range(row_count, len(assignment)))
-    row_index = row_codes.index(row_bits) if row_count else 0
-    column_index = col_codes.index(column_bits) if column_bits else 0
-    return row_index, column_index
+def _gray_code(bit_count: int) -> tuple[str, ...]:
+    if bit_count == 0:
+        return ("",)
+    previous = _gray_code(bit_count - 1)
+    return tuple("0" + code for code in previous) + tuple("1" + code for code in reversed(previous))
 
 
-def _is_power_of_two(value: int) -> bool:
-    return value > 0 and (value & (value - 1)) == 0
-
-
-def _rectangle_cells(
-    start_row: int,
-    start_column: int,
-    height: int,
-    width: int,
-    row_grid_size: int,
-    column_grid_size: int,
-) -> frozenset[tuple[int, int]]:
-    return frozenset(
-        ((start_row + row_offset) % row_grid_size, (start_column + column_offset) % column_grid_size)
-        for row_offset in range(height)
-        for column_offset in range(width)
-    )
-
-
-def _is_valid_karnaugh_group(
-    cells: frozenset[tuple[int, int]],
-    row_grid_size: int,
-    column_grid_size: int,
-) -> bool:
-    cell_count = len(cells)
-    if cell_count == 0 or not _is_power_of_two(cell_count):
-        return False
-    if cell_count == 1:
-        return True
-
-    height_power = 0
-    while (1 << height_power) <= cell_count:
-        height = 1 << height_power
-        if cell_count % height != 0:
-            height_power += 1
-            continue
-        width = cell_count // height
-        if not _is_power_of_two(width):
-            height_power += 1
-            continue
-        for start_row in range(row_grid_size):
-            for start_column in range(column_grid_size):
-                if _rectangle_cells(start_row, start_column, height, width, row_grid_size, column_grid_size) == cells:
-                    return True
-        height_power += 1
-    return False
-
-
-def _groups_can_merge_on_map(
-    first_group: tuple[BitPattern, frozenset[tuple[int, int]]],
-    second_group: tuple[BitPattern, frozenset[tuple[int, int]]],
-    row_grid_size: int,
-    column_grid_size: int,
-) -> BitPattern | None:
-    first_pattern, first_cells = first_group
-    second_pattern, second_cells = second_group
-    combined_pattern = _combine_patterns(first_pattern, second_pattern)
-    if combined_pattern is None or len(first_cells) != len(second_cells):
-        return None
-
-    merged_cells = first_cells | second_cells
-    if not _is_valid_karnaugh_group(merged_cells, row_grid_size, column_grid_size):
-        return None
-    return combined_pattern
+def _pattern_from_cells(
+    assignments: tuple[tuple[int, ...], ...]
+) -> BitPattern:
+    result = []
+    for bits in zip(*assignments):
+        first = bits[0]
+        if all(bit == first for bit in bits):
+            result.append(first)
+        else:
+            result.append(None)
+    return tuple(result)
 
 
 def _build_karnaugh_prime_implicants(
     initial_patterns: tuple[BitPattern, ...],
     variable_names: tuple[str, ...],
-) -> tuple[tuple[BitPattern, ...], tuple[BitPattern, ...]]:
+) -> tuple[tuple[tuple[BitPattern, ...], ...], tuple[BitPattern, ...]]:
+    """Находит все простые импликанты методом карт Карно.
+
+    Поддерживаемые размерности: 1–5 переменных.
+
+    Схема карты:
+    - 1–4 переменных: одна карта rows × cols, где rows = _gray_code(n//2),
+      cols = _gray_code(n - n//2).  Ячейка адресуется парой (row_idx, col_idx).
+    - 5 переменных: два блока 4×4 (block ∈ {0,1} по последней переменной).
+      Ячейка адресуется тройкой (block, row_idx, col_idx).
+      Допустимые группы:
+        • прямоугольник h×w внутри одного блока (с торическим переносом);
+        • тот же прямоугольник h×w одновременно в обоих блоках (зеркало по
+          последней переменной) — даёт группу размером 2·h·w.
+
+    Группа является простым импликантом, если она не поглощается никакой
+    более крупной допустимой группой.
+    """
     variable_count = len(variable_names)
-    row_variable_count = variable_count // 2
-    column_variable_count = variable_count - row_variable_count
-    row_codes = _gray_code(row_variable_count)
-    column_codes = _gray_code(column_variable_count)
-    row_grid_size = len(row_codes)
-    column_grid_size = len(column_codes)
 
-    current_groups = tuple(
-        sorted(
-            (
-                (
-                    bit_pattern,
-                    frozenset({_assignment_to_map_cell(bit_pattern, row_variable_count, row_codes, column_codes)}),
-                )
-                for bit_pattern in set(initial_patterns)
-            ),
-            key=lambda group: _pattern_sort_key(group[0]),
-        )
-    )
-    gluing_stages: list[tuple[BitPattern, ...]] = [tuple(group[0] for group in current_groups)]
-    prime_implicants: set[BitPattern] = set()
+    # ── Специальная ветка для 5 переменных ──────────────────────────────────
+    if variable_count == 5:
+        row_codes = _gray_code(2)   # первые 2 переменные → строки
+        col_codes = _gray_code(2)   # переменные 3-4 → столбцы
+        rows = len(row_codes)       # 4
+        cols = len(col_codes)       # 4
 
-    while current_groups:
-        used_groups: set[tuple[BitPattern, frozenset[tuple[int, int]]]] = set()
-        next_groups: dict[BitPattern, frozenset[tuple[int, int]]] = {}
-        for first_index, first_group in enumerate(current_groups):
-            for second_group in current_groups[first_index + 1 :]:
-                combined_pattern = _groups_can_merge_on_map(
-                    first_group,
-                    second_group,
-                    row_grid_size,
-                    column_grid_size,
-                )
-                if combined_pattern is None:
-                    continue
-                used_groups.add(first_group)
-                used_groups.add(second_group)
-                merged_cells = first_group[1] | second_group[1]
-                if combined_pattern in next_groups:
-                    next_groups[combined_pattern] |= merged_cells
-                else:
-                    next_groups[combined_pattern] = merged_cells
+        occupied: set[tuple[int, ...]] = set(initial_patterns)
 
-        for group in current_groups:
-            if group not in used_groups:
-                prime_implicants.add(group[0])
+        # Преобразуем минтерм (a,b,c,d,e) → (block=e, row=ab_idx, col=cd_idx)
+        def _to_cell5(asn: tuple[int, ...]) -> tuple[int, int, int]:
+            ab = f"{asn[0]}{asn[1]}"
+            cd = f"{asn[2]}{asn[3]}"
+            return asn[4], row_codes.index(ab), col_codes.index(cd)
 
-        if not next_groups:
-            break
-        current_groups = tuple(
-            sorted(
-                ((bit_pattern, next_groups[bit_pattern]) for bit_pattern in next_groups),
-                key=lambda group: _pattern_sort_key(group[0]),
+        occupied_cells: set[tuple[int, int, int]] = {_to_cell5(a) for a in occupied}
+
+        all_groups: list[tuple[frozenset[tuple[int, int, int]], BitPattern]] = []
+        seen_cell_sets: set[frozenset[tuple[int, int, int]]] = set()
+
+        def _try_add_group(cells: frozenset[tuple[int, int, int]]) -> None:
+            if cells in seen_cell_sets:
+                return
+            if not cells.issubset(occupied_cells):
+                return
+            seen_cell_sets.add(cells)
+            asns = tuple(
+                tuple(int(x) for x in row_codes[ri] + col_codes[ci] + str(bl))
+                for (bl, ri, ci) in cells
             )
+            pattern = _pattern_from_cells(asns)
+            all_groups.append((cells, pattern))
+
+        for h in (1, 2, 4):
+            for w in (1, 2, 4):
+                for sr in range(rows):
+                    for sc in range(cols):
+                        base_cells = frozenset(
+                            ((sr + dr) % rows, (sc + dc) % cols)
+                            for dr in range(h) for dc in range(w)
+                        )
+                        # Тип 1: один блок
+                        for bl in (0, 1):
+                            _try_add_group(frozenset((bl, r, c) for r, c in base_cells))
+                        # Тип 2: оба блока зеркально
+                        _try_add_group(
+                            frozenset((bl, r, c) for r, c in base_cells for bl in (0, 1))
+                        )
+
+        # Простые импликанты — не поглощённые более крупными группами
+        prime_implicants: list[BitPattern] = []
+        for i, (cells_i, pat_i) in enumerate(all_groups):
+            if any(cells_i < cells_j for cells_j, _ in all_groups):
+                continue
+            if pat_i not in prime_implicants:
+                prime_implicants.append(pat_i)
+
+        prime_implicants_tuple = tuple(sorted(prime_implicants, key=_pattern_sort_key))
+
+        # Этапы склеивания: уровни по размеру групп
+        size_to_patterns: dict[int, set[BitPattern]] = {}
+        for cells, pat in all_groups:
+            size_to_patterns.setdefault(len(cells), set()).add(pat)
+        gluing_stages = tuple(
+            tuple(sorted(pats, key=_pattern_sort_key))
+            for _, pats in sorted(size_to_patterns.items())
         )
-        gluing_stages.append(tuple(group[0] for group in current_groups))
+        return gluing_stages, prime_implicants_tuple
 
-    return tuple(gluing_stages), tuple(sorted(prime_implicants, key=_pattern_sort_key))
+    # ── Общий случай: 1–4 переменных ────────────────────────────────────────
+    row_count = variable_count // 2
+    col_count = variable_count - row_count
 
+    row_codes = _gray_code(row_count)
+    col_codes = _gray_code(col_count)
+
+    rows = len(row_codes)
+    cols = len(col_codes)
+
+    occupied_set: set[tuple[int, ...]] = set(initial_patterns)
+
+    # Ячейка: (row_idx, col_idx)
+    def _to_cell(asn: tuple[int, ...]) -> tuple[int, int]:
+        rb = "".join(str(asn[i]) for i in range(row_count))
+        cb = "".join(str(asn[i]) for i in range(row_count, variable_count))
+        return (row_codes.index(rb) if row_count else 0,
+                col_codes.index(cb) if col_count else 0)
+
+    occupied_cells_2d: set[tuple[int, int]] = {_to_cell(a) for a in occupied_set}
+
+    all_groups_2d: list[tuple[frozenset[tuple[int, int]], BitPattern]] = []
+    seen_2d: set[frozenset[tuple[int, int]]] = set()
+
+    for h in (1 << p for p in range(rows.bit_length())):
+        if h > rows:
+            break
+        for w in (1 << p for p in range(cols.bit_length())):
+            if w > cols:
+                break
+            for sr in range(rows):
+                for sc in range(cols):
+                    cells = frozenset(
+                        ((sr + dr) % rows, (sc + dc) % cols)
+                        for dr in range(h) for dc in range(w)
+                    )
+                    if cells in seen_2d or not cells.issubset(occupied_cells_2d):
+                        continue
+                    seen_2d.add(cells)
+                    asns = tuple(
+                        tuple(int(x) for x in row_codes[ri] + col_codes[ci])
+                        for (ri, ci) in cells
+                    )
+                    pattern = _pattern_from_cells(asns)
+                    all_groups_2d.append((cells, pattern))
+
+    if not all_groups_2d:
+        return (tuple(initial_patterns),), tuple(initial_patterns)
+
+    prime_implicants_2d: list[BitPattern] = []
+    for i, (cells_i, pat_i) in enumerate(all_groups_2d):
+        if any(cells_i < cells_j for cells_j, _ in all_groups_2d):
+            continue
+        if pat_i not in prime_implicants_2d:
+            prime_implicants_2d.append(pat_i)
+
+    prime_implicants_tuple_2d = tuple(sorted(prime_implicants_2d, key=_pattern_sort_key))
+
+    size_to_patterns_2d: dict[int, set[BitPattern]] = {}
+    for cells, pat in all_groups_2d:
+        size_to_patterns_2d.setdefault(len(cells), set()).add(pat)
+    gluing_stages_2d = tuple(
+        tuple(sorted(pats, key=_pattern_sort_key))
+        for _, pats in sorted(size_to_patterns_2d.items())
+    )
+    return gluing_stages_2d, prime_implicants_tuple_2d
 
 def _build_prime_implicants(initial_patterns: tuple[BitPattern, ...]) -> tuple[tuple[BitPattern, ...], tuple[BitPattern, ...]]:
     current_patterns = tuple(sorted(set(initial_patterns), key=_pattern_sort_key))
@@ -539,15 +574,39 @@ def _minimize_by_karnaugh(
     variable_names: tuple[str, ...],
     form: str,
 ) -> MinimizationResult:
+    """Минимизация методом карт Карно.
+
+    Простые импликанты находятся непосредственно на карте Карно: перебираются
+    все допустимые прямоугольные группы клеток (с торическим переносом и, для
+    5 переменных, зеркалированием между двумя блоками 4×4).  Группа является
+    простым импликантом, если она не поглощается никакой более крупной группой.
+    Оптимальное покрытие выбирается через _select_cover (эссенциальные
+    импликанты + перебор остатка).
+    """
     constant_result = _minimize_constant_result(assignments, variable_names, form)
     if constant_result is not None:
         return constant_result
 
-    initial_patterns = tuple(assignments)
-    gluing_stages, prime_implicants = _build_karnaugh_prime_implicants(initial_patterns, variable_names)
+    gluing_stages, prime_implicants = _build_karnaugh_prime_implicants(
+        tuple(assignments), variable_names
+    )
+
     selected_implicants = _select_cover(prime_implicants, assignments)
-    minimized_expression = _format_minimized_expression(selected_implicants, variable_names, form)
-    coverage_lines = _build_coverage_table_lines(selected_implicants, assignments, variable_names, form)
+
+    minimized_expression = _format_minimized_expression(
+        selected_implicants,
+        variable_names,
+        form,
+    )
+
+    coverage_lines = _build_coverage_table_lines(
+        prime_implicants,
+        assignments,
+        variable_names,
+        form,
+        selected_implicants=selected_implicants,
+    )
+
     return MinimizationResult(
         minimized_expression=minimized_expression,
         prime_implicants=prime_implicants,
@@ -555,14 +614,6 @@ def _minimize_by_karnaugh(
         gluing_stages=gluing_stages,
         coverage_table_lines=coverage_lines,
     )
-
-
-def _gray_code(bit_count: int) -> tuple[str, ...]:
-    if bit_count == 0:
-        return ("",)
-    previous = _gray_code(bit_count - 1)
-    return tuple("0" + code for code in previous) + tuple("1" + code for code in reversed(previous))
-
 
 @dataclass
 class BooleanFunctionAnalyzer:
@@ -776,7 +827,15 @@ class BooleanFunctionAnalyzer:
                     f"{derivative_name}: формула = {derivative_formula}; вектор = {derivative_values}"
                 )
         return tuple(report_lines)
+    
+    def minimize_dnf_karnaugh(self) -> MinimizationResult:
+        assignments = tuple(row.variable_values for row in self.truth_table if row.result_value == 1)
+        return _minimize_by_karnaugh(assignments, self.variable_names, "dnf")
 
+    def minimize_cnf_karnaugh(self) -> MinimizationResult:
+        assignments = tuple(row.variable_values for row in self.truth_table if row.result_value == 0)
+        return _minimize_by_karnaugh(assignments, self.variable_names, "cnf")
+    
     def minimize_dnf_calculation(self) -> MinimizationResult:
         assignments = tuple(row.variable_values for row in self.truth_table if row.result_value == 1)
         return _minimize_by_calculation(assignments, self.variable_names, "dnf")
@@ -818,14 +877,6 @@ class BooleanFunctionAnalyzer:
                 cell_values.append(str(int(function_value == target_value)))
             table_rows.append(tuple([row_code or "0", *cell_values]))
         return _format_table(tuple(table_rows))
-
-    def minimize_dnf_karnaugh(self) -> MinimizationResult:
-        assignments = tuple(row.variable_values for row in self.truth_table if row.result_value == 1)
-        return _minimize_by_karnaugh(assignments, self.variable_names, "dnf")
-
-    def minimize_cnf_karnaugh(self) -> MinimizationResult:
-        assignments = tuple(row.variable_values for row in self.truth_table if row.result_value == 0)
-        return _minimize_by_karnaugh(assignments, self.variable_names, "cnf")
 
     def build_report(self) -> str:
         report_sections: list[str] = []
