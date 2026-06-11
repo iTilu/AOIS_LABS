@@ -234,3 +234,110 @@ def test_post_init_validation_and_karnaugh_limit(monkeypatch):
     analyzer.variable_names = ("a", "b", "c", "d", "e", "ab")
     with pytest.raises(ValueError, match="at most five variables"):
         analyzer.karnaugh_map(1)
+
+
+def test_gray_code_generation():
+    assert boolean_analysis._gray_code(0) == ("",)
+    assert boolean_analysis._gray_code(1) == ("0", "1")
+    assert boolean_analysis._gray_code(2) == ("00", "01", "11", "10")
+
+
+def test_pattern_helpers():
+    assert boolean_analysis._pattern_covers_value((1, None, 0), (1, 1, 0))
+    assert not boolean_analysis._pattern_covers_value((1, None, 0), (0, 1, 0))
+
+    assert boolean_analysis._count_defined_bits((1, None, 0, None)) == 2
+    assert boolean_analysis._pattern_from_cells(((0, 0), (0, 1))) == (0, None)
+
+
+def test_petrick_cover_branch():
+    prime_implicants = (
+        (0, None),
+        (None, 0),
+        (1, None),
+        (None, 1),
+    )
+    assignments = (
+        (0, 1),
+        (1, 0),
+    )
+
+    result = boolean_analysis._petrick_cover(
+        prime_implicants,
+        assignments,
+        set(),
+    )
+
+    assert isinstance(result, tuple)
+    assert len(result) > 0
+
+
+def test_select_cover_table_branch():
+    prime_implicants = (
+        (0, None),
+        (None, 0),
+        (1, None),
+        (None, 1),
+    )
+    assignments = (
+        (0, 0),
+        (0, 1),
+        (1, 0),
+        (1, 1),
+    )
+
+    selected = boolean_analysis._select_cover_table(
+        prime_implicants,
+        assignments,
+    )
+
+    assert len(selected) >= 2
+
+
+def test_derivative_report_lines():
+    analyzer = BooleanFunctionAnalyzer("a&b")
+
+    lines = analyzer.derivative_report_lines()
+
+    assert any("d/da" in line for line in lines)
+    assert any("формула =" in line for line in lines)
+
+
+def test_five_variable_karnaugh_and_minimization():
+    analyzer = BooleanFunctionAnalyzer("a&b&c&d&e")
+
+    kmap = analyzer.karnaugh_map(1)
+
+    assert len(kmap) > 1
+
+    result = analyzer.minimize_dnf_karnaugh()
+    assert "a&b&c&d&e" in result.minimized_expression
+
+
+def test_constant_minimization_full_space():
+    variables = ("a", "b")
+
+    result = boolean_analysis._minimize_constant_result(
+        ((0, 0), (0, 1), (1, 0), (1, 1)),
+        variables,
+        "dnf",
+    )
+
+    assert result is not None
+    assert result.minimized_expression == "1"
+
+
+def test_minterm_and_maxterm_indices():
+    analyzer = BooleanFunctionAnalyzer("a")
+
+    assert analyzer.minterm_indices() == (1,)
+    assert analyzer.maxterm_indices() == (0,)
+
+
+def test_evaluate_on_and_vector_to_dnf():
+    analyzer = BooleanFunctionAnalyzer("a|b")
+
+    assert analyzer.evaluate_on((1, 0)) == 1
+
+    expression = analyzer._vector_to_dnf((0, 1, 1, 1))
+    assert expression != ""

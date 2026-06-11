@@ -280,35 +280,19 @@ def _build_karnaugh_prime_implicants(
     initial_patterns: tuple[BitPattern, ...],
     variable_names: tuple[str, ...],
 ) -> tuple[tuple[tuple[BitPattern, ...], ...], tuple[BitPattern, ...]]:
-    """Находит все простые импликанты методом карт Карно.
 
-    Поддерживаемые размерности: 1–5 переменных.
-
-    Схема карты:
-    - 1–4 переменных: одна карта rows × cols, где rows = _gray_code(n//2),
-      cols = _gray_code(n - n//2).  Ячейка адресуется парой (row_idx, col_idx).
-    - 5 переменных: два блока 4×4 (block ∈ {0,1} по последней переменной).
-      Ячейка адресуется тройкой (block, row_idx, col_idx).
-      Допустимые группы:
-        • прямоугольник h×w внутри одного блока (с торическим переносом);
-        • тот же прямоугольник h×w одновременно в обоих блоках (зеркало по
-          последней переменной) — даёт группу размером 2·h·w.
-
-    Группа является простым импликантом, если она не поглощается никакой
-    более крупной допустимой группой.
-    """
     variable_count = len(variable_names)
 
-    # ── Специальная ветка для 5 переменных ──────────────────────────────────
+   
     if variable_count == 5:
-        row_codes = _gray_code(2)   # первые 2 переменные → строки
-        col_codes = _gray_code(2)   # переменные 3-4 → столбцы
-        rows = len(row_codes)       # 4
-        cols = len(col_codes)       # 4
+        row_codes = _gray_code(2)  
+        col_codes = _gray_code(2)   
+        rows = len(row_codes)       
+        cols = len(col_codes)       
 
         occupied: set[tuple[int, ...]] = set(initial_patterns)
 
-        # Преобразуем минтерм (a,b,c,d,e) → (block=e, row=ab_idx, col=cd_idx)
+        
         def _to_cell5(asn: tuple[int, ...]) -> tuple[int, int, int]:
             ab = f"{asn[0]}{asn[1]}"
             cd = f"{asn[2]}{asn[3]}"
@@ -340,15 +324,14 @@ def _build_karnaugh_prime_implicants(
                             ((sr + dr) % rows, (sc + dc) % cols)
                             for dr in range(h) for dc in range(w)
                         )
-                        # Тип 1: один блок
+                       
                         for bl in (0, 1):
                             _try_add_group(frozenset((bl, r, c) for r, c in base_cells))
-                        # Тип 2: оба блока зеркально
+                        
                         _try_add_group(
                             frozenset((bl, r, c) for r, c in base_cells for bl in (0, 1))
                         )
 
-        # Простые импликанты — не поглощённые более крупными группами
         prime_implicants: list[BitPattern] = []
         for i, (cells_i, pat_i) in enumerate(all_groups):
             if any(cells_i < cells_j for cells_j, _ in all_groups):
@@ -358,7 +341,7 @@ def _build_karnaugh_prime_implicants(
 
         prime_implicants_tuple = tuple(sorted(prime_implicants, key=_pattern_sort_key))
 
-        # Этапы склеивания: уровни по размеру групп
+        
         size_to_patterns: dict[int, set[BitPattern]] = {}
         for cells, pat in all_groups:
             size_to_patterns.setdefault(len(cells), set()).add(pat)
@@ -368,7 +351,6 @@ def _build_karnaugh_prime_implicants(
         )
         return gluing_stages, prime_implicants_tuple
 
-    # ── Общий случай: 1–4 переменных ────────────────────────────────────────
     row_count = variable_count // 2
     col_count = variable_count - row_count
 
@@ -380,7 +362,7 @@ def _build_karnaugh_prime_implicants(
 
     occupied_set: set[tuple[int, ...]] = set(initial_patterns)
 
-    # Ячейка: (row_idx, col_idx)
+    
     def _to_cell(asn: tuple[int, ...]) -> tuple[int, int]:
         rb = "".join(str(asn[i]) for i in range(row_count))
         cb = "".join(str(asn[i]) for i in range(row_count, variable_count))
@@ -574,15 +556,7 @@ def _minimize_by_karnaugh(
     variable_names: tuple[str, ...],
     form: str,
 ) -> MinimizationResult:
-    """Минимизация методом карт Карно.
 
-    Простые импликанты находятся непосредственно на карте Карно: перебираются
-    все допустимые прямоугольные группы клеток (с торическим переносом и, для
-    5 переменных, зеркалированием между двумя блоками 4×4).  Группа является
-    простым импликантом, если она не поглощается никакой более крупной группой.
-    Оптимальное покрытие выбирается через _select_cover (эссенциальные
-    импликанты + перебор остатка).
-    """
     constant_result = _minimize_constant_result(assignments, variable_names, form)
     if constant_result is not None:
         return constant_result
